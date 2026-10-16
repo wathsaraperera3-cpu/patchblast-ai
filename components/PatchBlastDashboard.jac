@@ -36,9 +36,18 @@ def:pub PatchBlastDashboard() -> JsxElement {
         data = await resetScenario();
         notice = "Simulation restored to baseline inventory.";
     }
-    def report(e: MouseEvent) {
-        report_data = getReport(data["components"] as list[dict]);
-        notice = "Report generated from the current analysis snapshot: " + str(report_data["analysis"]["potential_count"]) + " potentially affected paths.";
+    async def report -> None {
+        report_json = await getReport(data["components"] as list[dict]);
+        # jac:ignore[E1053]
+        blob = new(Blob,[report_json],{"type":"application/json"});
+        # jac:ignore[E1032]
+        address = URL.createObjectURL(blob);
+        anchor: any = document.createElement("a");
+        anchor.href = address;
+        anchor.download = "patchblast-investigation.json";
+        anchor.click();
+        URL.revokeObjectURL(address);
+        notice = "Current scenario report downloaded as JSON.";
     }
     if len(data) == 0 { return <main className="min-h-svh bg-[#0B1220] p-8 text-slate-300">Loading investigation workspace…</main>; }
     analysis = data["analysis"] as dict;

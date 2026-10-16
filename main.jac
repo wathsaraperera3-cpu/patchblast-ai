@@ -1,4 +1,4 @@
-import from services.patchblastService { loadPatchblast, upgradeScenario, resetScenario, getReport }
+import from services.patchblastService { loadPatchblast, upgradeScenario, resetScenario, getReport, analyzeDependencies }
 import from "@jac/runtime" { Router, Routes, Route }
 import from .components.PatchBlastDashboard { PatchBlastDashboard }
 import ".styles.global.css";

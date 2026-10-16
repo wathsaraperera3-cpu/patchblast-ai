@@ -1,3 +1,41 @@
+node Asset {
+    has id: str;
+    has name: str;
+    has kind: str;
+    has version: str = "";
+    has criticality: str = "Low";
+    has internet: bool = False;
+}
+
+edge Dependency: Asset --> Asset {
+    has relation: str = "depends_on";
+}
+
+walker DiscoverGraph {
+    has asset_ids: list[str] = [];
+    has links: list[dict] = [];
+    has visited: list[str] = [];
+    has reports: list[dict] = [];
+
+    can start with Root entry {
+        visit [-->][?:Asset];
+    }
+
+    can discover with Asset entry {
+        if here.id in self.visited { skip; }
+        self.visited = self.visited + [here.id];
+        self.asset_ids = self.asset_ids + [here.id];
+        for target in [here ->:Dependency:->] {
+            self.links = self.links + [{"from":here.id,"to":target.id,"relation":"depends_on"}];
+        }
+        visit [here ->:Dependency:->];
+    }
+
+    can finish with Root exit {
+        report {"asset_ids":self.asset_ids,"links":self.links};
+    }
+}
+
 def _version_tuple(version: str) -> list[int] | None {
     parts = version.split(".");
     if len(parts) != 3 { return None; }
@@ -20,75 +58,162 @@ def _compare_versions(left: str, right: str) -> int | None {
     return 0;
 }
 
-def _seed_components() -> list[dict] {
-    return [
-        {"id":"auth-acme","name":"AcmeAuth","version":"2.3.1","kind":"library","owner":"Auth API"},
-        {"id":"checkout-token","name":"TokenKit","version":"1.1.0","kind":"library","owner":"Checkout API"},
-        {"id":"checkout-acme","name":"AcmeAuth","version":"2.3.1","kind":"library","owner":"Checkout API"},
-        {"id":"staff-acme","name":"AcmeAuth","version":"2.4.0","kind":"library","owner":"Staff Login Service"},
-        {"id":"event-json","name":"JsonKit","version":"3.2.0","kind":"library","owner":"Event Collector"},
-        {"id":"order-queue","name":"QueueFlow","version":"4.0.2","kind":"library","owner":"Order API"},
-        {"id":"billing-money","name":"MoneyMath","version":"1.9.4","kind":"library","owner":"Billing Worker"},
-        {"id":"notify-http","name":"HttpClient","version":"5.1.0","kind":"library","owner":"Notification Service"},
-        {"id":"report-csv","name":"CsvKit","version":"2.0.0","kind":"library","owner":"Reporting Service"},
-        {"id":"staff-ui","name":"UiCore","version":"7.2.1","kind":"library","owner":"Staff Login Service"},
-        {"id":"checkout-date","name":"DateTools","version":"3.0.0","kind":"library","owner":"Checkout API"},
-        {"id":"unknown-sdk","name":"LegacySDK","version":"unknown","kind":"library","owner":"Billing Worker"}
-    ];
+def _find_asset(identifier: str) -> Asset | None {
+    for asset in [root -->][?:Asset] {
+        if asset.id == identifier { return asset; }
+    }
+    return None;
 }
 
-def _paths(components: list[dict]) -> list[dict] {
-    paths: list[dict] = [];
-    paths = paths + [{"application":"Customer Portal","criticality":"High","service":"Auth API","internet":True,"chain":["Customer Portal","Auth API","AcmeAuth " + (components[0]["version"] as str)],"target":"auth-acme"}];
-    token_v = components[1]["version"] as str;
-    acme_v = components[2]["version"] as str;
-    paths = paths + [{"application":"Checkout Platform","criticality":"Critical","service":"Checkout API","internet":True,"chain":["Checkout Platform","Checkout API","TokenKit " + token_v,"AcmeAuth " + acme_v],"target":"checkout-acme"}];
-    paths = paths + [{"application":"Checkout Platform","criticality":"Critical","service":"Checkout API","internet":True,"chain":["Checkout Platform","Checkout API","DateTools " + (components[10]["version"] as str)],"target":"checkout-date"}];
-    paths = paths + [{"application":"Staff Console","criticality":"Medium","service":"Staff Login Service","internet":False,"chain":["Staff Console","Staff Login Service","AcmeAuth " + (components[3]["version"] as str)],"target":"staff-acme"}];
-    paths = paths + [{"application":"Staff Console","criticality":"Medium","service":"Staff Login Service","internet":False,"chain":["Staff Console","Staff Login Service","UiCore " + (components[9]["version"] as str)],"target":"staff-ui"}];
-    paths = paths + [{"application":"Analytics Portal","criticality":"Low","service":"Event Collector","internet":False,"chain":["Analytics Portal","Event Collector","JsonKit " + (components[4]["version"] as str)],"target":"event-json"}];
-    paths = paths + [{"application":"Analytics Portal","criticality":"Low","service":"Reporting Service","internet":False,"chain":["Analytics Portal","Reporting Service","CsvKit " + (components[8]["version"] as str)],"target":"report-csv"}];
-    paths = paths + [{"application":"Checkout Platform","criticality":"Critical","service":"Order API","internet":False,"chain":["Checkout Platform","Order API","QueueFlow " + (components[5]["version"] as str)],"target":"order-queue"}];
-    paths = paths + [{"application":"Checkout Platform","criticality":"Critical","service":"Billing Worker","internet":False,"chain":["Checkout Platform","Billing Worker","MoneyMath " + (components[6]["version"] as str)],"target":"billing-money"}];
-    paths = paths + [{"application":"Customer Portal","criticality":"High","service":"Notification Service","internet":False,"chain":["Customer Portal","Notification Service","HttpClient " + (components[7]["version"] as str)],"target":"notify-http"}];
-    paths = paths + [{"application":"Checkout Platform","criticality":"Critical","service":"Billing Worker","internet":False,"chain":["Checkout Platform","Billing Worker","LegacySDK unknown"],"target":"unknown-sdk"}];
-    return paths;
+def _ensure_asset(identifier: str, label: str, kind: str, version: str = "", criticality: str = "Low", internet: bool = False) -> Asset {
+    existing = _find_asset(identifier);
+    if existing is not None { return existing; }
+    fresh = Asset(id=identifier,name=label,kind=kind,version=version,criticality=criticality,internet=internet);
+    root ++> fresh;
+    return fresh;
 }
 
-def _analysis(components: list[dict]) -> dict {
-    paths = _paths(components);
+def _link(source: Asset, target: Asset) {
+    existing = [source ->:Dependency:->];
+    if target not in existing { source +>:Dependency(relation="depends_on"):+> target; }
+}
+
+def _seed_graph() {
+    customer = _ensure_asset("app-customer","Customer Portal","application","","High",True);
+    checkout = _ensure_asset("app-checkout","Checkout Platform","application","","Critical",True);
+    staff = _ensure_asset("app-staff","Staff Console","application","","Medium",False);
+    analytics = _ensure_asset("app-analytics","Analytics Portal","application","","Low",False);
+    auth = _ensure_asset("service-auth","Auth API","service");
+    checkout_api = _ensure_asset("service-checkout","Checkout API","service");
+    order = _ensure_asset("service-order","Order API","service");
+    billing = _ensure_asset("service-billing","Billing Worker","service");
+    staff_login = _ensure_asset("service-staff-login","Staff Login Service","service");
+    event = _ensure_asset("service-event","Event Collector","service");
+    notify = _ensure_asset("service-notify","Notification Service","service");
+    reporting = _ensure_asset("service-reporting","Reporting Service","service");
+    acme_auth = _ensure_asset("auth-acme","AcmeAuth","component","2.3.1");
+    tokenkit = _ensure_asset("checkout-token","TokenKit","component","1.1.0");
+    checkout_auth = _ensure_asset("checkout-acme","AcmeAuth","component","2.3.1");
+    staff_auth = _ensure_asset("staff-acme","AcmeAuth","component","2.4.0");
+    jsonkit = _ensure_asset("event-json","JsonKit","component","3.2.0");
+    queue = _ensure_asset("order-queue","QueueFlow","component","4.0.2");
+    money = _ensure_asset("billing-money","MoneyMath","component","1.9.4");
+    http = _ensure_asset("notify-http","HttpClient","component","5.1.0");
+    csv = _ensure_asset("report-csv","CsvKit","component","2.0.0");
+    ui = _ensure_asset("staff-ui","UiCore","component","7.2.1");
+    date = _ensure_asset("checkout-date","DateTools","component","3.0.0");
+    unknown = _ensure_asset("unknown-sdk","LegacySDK","component","unknown");
+    _link(customer,auth); _link(customer,notify);
+    _link(checkout,checkout_api); _link(checkout,order); _link(checkout,billing);
+    _link(staff,staff_login); _link(analytics,event); _link(analytics,reporting);
+    _link(auth,acme_auth); _link(checkout_api,tokenkit); _link(checkout_api,date);
+    _link(tokenkit,checkout_auth); _link(staff_login,staff_auth); _link(staff_login,ui);
+    _link(event,jsonkit); _link(reporting,csv); _link(order,queue);
+    _link(billing,money); _link(billing,unknown);
+}
+
+def _snapshot() -> dict {
+    result = root spawn DiscoverGraph();
+    if len(result.reports) == 0 { return {"asset_ids":[],"links":[]}; }
+    return result.reports[0];
+}
+
+def _component_rows(snapshot: dict) -> list[dict] {
+    rows: list[dict] = [];
+    for identifier in (snapshot["asset_ids"] as list[str]) {
+        asset = _find_asset(identifier);
+        if asset is not None and asset.kind == "component" {
+            owner_name = asset.id;
+            if asset.id == "auth-acme" { owner_name = "Auth API"; }
+            elif asset.id == "checkout-acme" { owner_name = "Checkout API"; }
+            elif asset.id == "staff-acme" { owner_name = "Staff Login Service"; }
+            elif asset.id == "checkout-token" or asset.id == "checkout-date" { owner_name = "Checkout API"; }
+            elif asset.id == "event-json" { owner_name = "Event Collector"; }
+            elif asset.id == "order-queue" { owner_name = "Order API"; }
+            elif asset.id == "billing-money" or asset.id == "unknown-sdk" { owner_name = "Billing Worker"; }
+            elif asset.id == "notify-http" { owner_name = "Notification Service"; }
+            elif asset.id == "report-csv" { owner_name = "Reporting Service"; }
+            elif asset.id == "staff-ui" { owner_name = "Staff Login Service"; }
+            rows = rows + [{"id":asset.id,"name":asset.name,"version":asset.version,"kind":"library","owner":owner_name}];
+        }
+    }
+    return rows;
+}
+
+def _version_for(identifier: str, overrides: list[dict]) -> str {
+    for row in overrides {
+        if (row["id"] as str) == identifier { return row["version"] as str; }
+    }
+    asset = _find_asset(identifier);
+    if asset is None { return "unknown"; }
+    return asset.version;
+}
+
+def _dfs(current: Asset, app: Asset, chain: list[str], seen: list[str], overrides: list[dict], out: list[dict]) -> list[dict] {
+    if current.id in seen { return out; }
+    next_seen = seen + [current.id];
+    label = current.name;
+    if current.kind == "component" { label = current.name + " " + _version_for(current.id,overrides); }
+    next_chain = chain + [label];
+    children = [current ->:Dependency:->];
+    if len(children) == 0 {
+        if current.kind == "component" {
+            service_name = chain[1] if len(chain) > 1 else "";
+            return out + [{"application":app.name,"criticality":app.criticality,"internet":app.internet,"service":service_name,"chain":next_chain,"target":current.id}];
+        }
+        return out;
+    }
+    for child in children {
+        found = _dfs(child,app,next_chain,next_seen,overrides,out);
+        out = found;
+    }
+    return out;
+}
+
+def _analysis(snapshot: dict, overrides: list[dict]) -> dict {
+    _ = snapshot;
+    all_paths: list[dict] = [];
+    for app in [root -->][?:Asset] {
+        if app.kind == "application" {
+            for service in [app ->:Dependency:->] {
+                found = _dfs(service,app,[app.name],[app.id],overrides,[]);
+                all_paths = all_paths + found;
+            }
+        }
+    }
     findings: list[dict] = [];
     affected_apps: list[str] = [];
     affected_services: list[str] = [];
-    for path in paths {
+    for path in all_paths {
         chain = path["chain"] as list[str];
+        leaf = chain[len(chain) - 1];
+        pkg_parts = leaf.split(" ");
+        package_name = pkg_parts[0];
+        installed = pkg_parts[len(pkg_parts) - 1];
         status = "NOT_AFFECTED_BY_THIS_ADVISORY";
         evidence = "No AcmeAuth version on this path matches the simulated affected range.";
         priority = 0;
-        for item in chain {
-            if item.startswith("AcmeAuth ") {
-                installed = item.replace("AcmeAuth ", "");
-                low_cmp = _compare_versions(installed, "2.0.0");
-                high_cmp = _compare_versions(installed, "2.3.9");
-                if low_cmp is None or high_cmp is None {
-                    status = "NEEDS_VERIFICATION";
-                    evidence = "AcmeAuth inventory version is ambiguous and requires human verification.";
-                } elif low_cmp >= 0 and high_cmp <= 0 {
-                    status = "POTENTIALLY_AFFECTED";
-                    evidence = "AcmeAuth " + installed + " is within the inclusive affected range 2.0.0–2.3.9.";
-                }
-            } elif item.startswith("LegacySDK unknown") {
+        if package_name == "AcmeAuth" {
+            low_cmp = _compare_versions(installed,"2.0.0");
+            high_cmp = _compare_versions(installed,"2.3.9");
+            if low_cmp is None or high_cmp is None {
                 status = "NEEDS_VERIFICATION";
-                evidence = "A dependency record has no parseable version; verify the inventory separately.";
+                evidence = "AcmeAuth inventory version is ambiguous and requires human verification.";
+            } elif low_cmp >= 0 and high_cmp <= 0 {
+                status = "POTENTIALLY_AFFECTED";
+                evidence = "AcmeAuth " + installed + " is within the inclusive affected range 2.0.0–2.3.9.";
             }
+        } elif installed == "unknown" {
+            status = "NEEDS_VERIFICATION";
+            evidence = "A dependency record has no parseable version; verify the inventory separately.";
         }
         if status == "POTENTIALLY_AFFECTED" {
             criticality = path["criticality"] as str;
             priority = 62;
-            if criticality == "Critical" { priority = priority + 24; }
-            elif criticality == "High" { priority = priority + 18; }
-            elif criticality == "Medium" { priority = priority + 10; }
-            if path["internet"] as bool { priority = priority + 10; }
+            if criticality == "Critical" { priority += 24; }
+            elif criticality == "High" { priority += 18; }
+            elif criticality == "Medium" { priority += 10; }
+            if path["internet"] as bool { priority += 10; }
             if priority > 100 { priority = 100; }
             app_name = path["application"] as str;
             service_name = path["service"] as str;
@@ -100,20 +225,28 @@ def _analysis(components: list[dict]) -> dict {
         elif status == "NEEDS_VERIFICATION" { label = "Verify inventory"; }
         findings = findings + [{"application":path["application"],"service":path["service"],"chain":chain,"target":path["target"],"status":status,"evidence":evidence,"priority":priority,"priority_label":label,"criticality":path["criticality"],"internet":path["internet"]}];
     }
-    potentially = 0;
-    verification = 0;
+    potentially = 0; verification = 0;
     for finding in findings {
         if finding["status"] as str == "POTENTIALLY_AFFECTED" { potentially += 1; }
         if finding["status"] as str == "NEEDS_VERIFICATION" { verification += 1; }
     }
-    return {"findings":findings,"paths":paths,"affected_apps":affected_apps,"affected_services":affected_services,"potential_count":potentially,"verification_count":verification};
+    return {"findings":findings,"paths":all_paths,"affected_apps":affected_apps,"affected_services":affected_services,"potential_count":potentially,"verification_count":verification};
+}
+
+def:pub analyzeDependencies() -> dict {
+    _seed_graph();
+    snapshot = _snapshot();
+    rows = _component_rows(snapshot);
+    return _analysis(snapshot,rows);
 }
 
 def:pub loadPatchblast(components: list[dict] = []) -> dict {
-    data = components;
-    if len(data) == 0 { data = _seed_components(); }
-    analysis = _analysis(data);
-    return {"company":"NovaCommerce Technologies","applications":4,"services":8,"component_count":len(data),"components":data,"analysis":analysis,"agents":[{"name":"Dependency Discovery","detail":"Enumerated application-to-service dependency paths with cycle-safe visited records."},{"name":"Vulnerability Investigation","detail":"Compared package versions numerically against the inclusive simulated advisory range."},{"name":"Business Impact","detail":"Calculated review priority from severity, criticality, and internet exposure."},{"name":"Remediation Planning","detail":"Generated review-first upgrade candidates from affected path evidence."}],"advisory":{"id":"ADV-DEMO-2026-001","title":"AcmeAuth Authentication Validation Vulnerability","package":"AcmeAuth","range":"2.0.0 – 2.3.9 inclusive","fixed":"2.4.0","severity":"High","description":"A fictional validation weakness affects the listed AcmeAuth versions. Services containing these versions require investigation and potential remediation.","simulated":True}};
+    _seed_graph();
+    snapshot = _snapshot();
+    rows = components;
+    if len(rows) == 0 { rows = _component_rows(snapshot); }
+    analysis = _analysis(snapshot,rows);
+    return {"company":"NovaCommerce Technologies","applications":4,"services":8,"component_count":len(rows),"components":rows,"analysis":analysis,"agents":[{"name":"Dependency Discovery","detail":"A Jac walker discovers graph nodes and typed dependency edges; cycle-safe traversal preserves full application paths."},{"name":"Vulnerability Investigation","detail":"Deterministic numeric version comparison checks each reached package against the inclusive advisory range."},{"name":"Business Impact","detail":"Review priority combines advisory severity, business criticality, and internet exposure."},{"name":"Remediation Planning","detail":"Upgrade recommendations are generated from the current graph-derived evidence and remaining paths."}],"advisory":{"id":"ADV-DEMO-2026-001","title":"AcmeAuth Authentication Validation Vulnerability","package":"AcmeAuth","range":"2.0.0 – 2.3.9 inclusive","fixed":"2.4.0","severity":"High","description":"A fictional validation weakness affects the listed AcmeAuth versions. Services containing these versions require investigation and potential remediation.","simulated":True}};
 }
 
 def:pub upgradeScenario(components: list[dict], target: str, version: str) -> dict {
@@ -121,18 +254,17 @@ def:pub upgradeScenario(components: list[dict], target: str, version: str) -> di
     if _version_tuple(version) is None { return loadPatchblast(components); }
     changed: list[dict] = [];
     for component in components {
-        if (component["id"] as str) == target {
-            changed = changed + [{**component,"version":version}];
-        } else { changed = changed + [component]; }
+        if (component["id"] as str) == target { changed = changed + [{**component,"version":version}]; }
+        else { changed = changed + [component]; }
     }
     return loadPatchblast(changed);
 }
 
-def:pub resetScenario() -> dict {
-    return loadPatchblast();
-}
+def:pub resetScenario() -> dict { return loadPatchblast(); }
 
-def:pub getReport(components: list[dict]) -> dict {
+def:pub getReport(components: list[dict]) -> str {
+    import json;
     result = loadPatchblast(components);
-    return {"product":"PatchBlast AI","company":result["company"],"advisory":result["advisory"],"analysis":result["analysis"],"components":result["components"],"notice":"Fictional demonstration data. Potential exposure does not prove exploitability."};
+    payload = {"product":"PatchBlast AI","generated_at":"Current scenario snapshot","company":result["company"],"advisory":result["advisory"],"analysis":result["analysis"],"components":result["components"],"notice":"Fictional demonstration data. Potential exposure does not prove exploitability."};
+    return json.dumps(payload,indent=2);
 }
